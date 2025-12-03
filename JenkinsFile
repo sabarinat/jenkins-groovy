@@ -108,7 +108,7 @@ pipeline {
                             docker build -t myapp:latest .
                            docker tag myapp:latest %DOCKER_IMAGE%:%TAG%
                            docker push %DOCKER_IMAGE%:%TAG%
-                           git checkout main"
+                           git checkout main
                            git branch -d release-%TAG%"
                             '''
                     }
