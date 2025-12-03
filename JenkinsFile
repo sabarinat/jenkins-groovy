@@ -1,7 +1,19 @@
+import groovy.json.JsonSlurper
+
 def branchExists(String files, String branchName) {
     // returnStatus: 0 if branch exists, 1 if not
     def status = bat(
         script: "cd ${files} && git rev-parse --verify ${branchName}",
+        returnStatus: true
+    )
+    
+    return status == 0
+}
+
+def imageExists(String files, String tag, String image) {
+    // returnStatus: 0 if branch exists, 1 if not
+    def status = bat(
+        script: "cd ${files} && docker images ${env.IMAGE_NAME}:${env.TAG} ${image}:${tag}",
         returnStatus: true
     )
     
@@ -17,16 +29,29 @@ pipeline {
         choice(name: 'env', description: 'Enter environments', choices: ['d1', 's1'])
     }
     environment {
-            DOCKER_IMAGE = "docker-repo"
-            DOCKER_USER = "dockerhubusername"
-            DOCKER_PASS = "dockerhhubpass"
-            KUBECONFIG = 'kubeconfigLocal'
+            PORT = "3000"
+            KUBECONFIG = 'C:\\Users\\Sabar\\.kube\\config'
             TAG = "${params.tag}"
             
        }
     stages {
         
-        
+        stage('get all cred from json') {
+            steps {
+                    withCredentials([file(credentialsId: 'secret_v2', variable: 'KEY_FILE')]) {
+                     script {
+                         def fileContents = readFile(file: env.KEY_FILE)
+                         def json = new JsonSlurper().parseText(fileContents)
+                        //  bat "echo %json.docker_image%"
+                        // env = json
+                        env.docker_image = json.docker_image
+                        json.each { key, value ->
+                            env[key.toUpperCase()] = value
+                        }
+                     }
+                }
+            }
+        }
         stage('Git Clone or Pull for kube') {
                 steps {
                     // Clone if folder doesn't exist, otherwise pull
@@ -46,7 +71,7 @@ pipeline {
         stage('Docker Login') {
             steps {
                 script {
-                    bat "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password $DOCKER_PASS"
+                    bat "echo ${env.DOCKER_PASS} | docker login -u ${env.DOCKER_USER} --password ${env.DOCKER_PASS}"
                 }
             }
         }
@@ -75,7 +100,7 @@ pipeline {
                     def branchName = "release-%TAG%"
                     bat "cd simple-node-docker"
                     def folder = "simple-node-docker"
-                    if (branchExists(folder,branchName)) {
+                    if (imageExists(folder, TAG, env.DOCKER_IMAGE)) {
                         echo "Branch '${branchName}' exists in local repo"
                     } else {
                         bat '''cd simple-node-docker
@@ -83,6 +108,8 @@ pipeline {
                             docker build -t myapp:latest .
                            docker tag myapp:latest %DOCKER_IMAGE%:%TAG%
                            docker push %DOCKER_IMAGE%:%TAG%
+                           git checkout main"
+                           git branch -d release-%TAG%"
                             '''
                     }
                 }
