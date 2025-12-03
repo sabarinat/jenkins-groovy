@@ -119,7 +119,7 @@ pipeline {
         stage('Kubernetes') {
             steps { 
                 script {
-                    def files = ['namespace.yaml','deployment.yaml','node-service.yaml']
+                    def files = ['namespace.yaml','deployment.yaml','node-service.yaml', 'ingres.yaml']
     
                         files.each { file ->
                         echo "Processing file: ${file}"
