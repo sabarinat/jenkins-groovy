@@ -2,7 +2,7 @@ import groovy.json.JsonSlurper
 
 def branchExists(String files, String branchName) {
     // returnStatus: 0 if branch exists, 1 if not
-    def status = bat(
+    def status = sh(
         script: "cd ${files} && git rev-parse --verify ${branchName}",
         returnStatus: true
     )
@@ -12,7 +12,7 @@ def branchExists(String files, String branchName) {
 
 def imageExists(String files, String tag, String image) {
     // returnStatus: 0 if branch exists, 1 if not
-    def status = bat(
+    def status = sh(
         script: "cd ${files} && docker images ${image}:${tag}",
         returnStatus: true
     )
@@ -42,7 +42,7 @@ pipeline {
                      script {
                          def fileContents = readFile(file: env.KEY_FILE)
                          def json = new JsonSlurper().parseText(fileContents)
-                        //  bat "echo %json.docker_image%"
+                        //  sh "echo %json.docker_image%"
                         // env = json
                         env.docker_image = json.docker_image
                         json.each { key, value ->
@@ -55,7 +55,7 @@ pipeline {
         stage('Git Clone or Pull for kube') {
                 steps {
                     // Clone if folder doesn't exist, otherwise pull
-                    bat '''
+                    sh '''
                     if not exist "kube-bas-learning" (
                         git clone https://github.com/sabarinat/kube-bas-learning.git
                     ) else (
@@ -71,7 +71,7 @@ pipeline {
         stage('Docker Login') {
             steps {
                 script {
-                    bat "echo ${env.DOCKER_PASS} | docker login -u ${env.DOCKER_USER} --password ${env.DOCKER_PASS}"
+                    sh "echo ${env.DOCKER_PASS} | docker login -u ${env.DOCKER_USER} --password ${env.DOCKER_PASS}"
                 }
             }
         }
@@ -79,8 +79,8 @@ pipeline {
         stage('Git Clone or Pull for node with docker') {
                 steps {
                     // Clone if folder doesn't exist, otherwise pull
-                    bat "echo --- $tag"
-                    bat '''
+                    sh "echo --- $tag"
+                    sh '''
                     echo %TAG%
                     if not exist "simple-node-docker" (
                        git clone https://github.com/sabarinat/simple-node-docker.git
@@ -98,12 +98,12 @@ pipeline {
                     // Clone if folder doesn't exist, otherwise pull
                     script {
                     def branchName = "release-%TAG%"
-                    bat "cd simple-node-docker"
+                    sh "cd simple-node-docker"
                     def folder = "simple-node-docker"
                     if (imageExists(folder, TAG, env.DOCKER_IMAGE)) {
                         echo "Branch '${branchName}' exists in local repo"
                     } else {
-                        bat '''cd simple-node-docker
+                        sh '''cd simple-node-docker
                             git checkout tags/%TAG% -b release-%TAG%"
                             docker build -t myapp:latest .
                            docker tag myapp:latest %DOCKER_IMAGE%:%TAG%
@@ -128,17 +128,15 @@ pipeline {
                         def output = "generated-${file}"
                         echo "Processing file: ---- ${file}"
                         // Replace placeholder
-                        powershell """
-                            (Get-Content kube-bas-learning/${file}) -replace '{name_space}', '${params.country}' |
-                            Set-Content ${output}
-                            (Get-Content ${output}) -replace '{country}', '${params.env}' |
-                            Set-Content ${output}
-                            (Get-Content ${output}) -replace '{tag}', '${params.tag}' |
-                            Set-Content ${output}
-                        """
+                        sh '''
+                            sed "s/{name_space}/${params_country}/g" kube-bas-learning/${file} \
+                            | sed "s/{country}/${params_env}/g" \
+                            | sed "s/{tag}/${params_tag}/g" \
+                            > ${output}
+                            '''
                          echo "Processing file: ---- ${file}"
                         // Apply using kubectl
-                        bat """
+                        sh """
                             kubectl apply -f ${output}
                         """
                 }
