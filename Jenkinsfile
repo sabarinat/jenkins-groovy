@@ -1,25 +1,26 @@
 import groovy.json.JsonSlurper
 
 def branchExists(String files, String branchName) {
-    // returnStatus: 0 if branch exists, 1 if not
     def status = sh(
-        script: "cd ${files} && git rev-parse --verify ${branchName}",
+        script: """
+            cd "${files}"
+            git rev-parse --verify "refs/heads/${branchName}" >/dev/null 2>&1
+        """,
         returnStatus: true
     )
-    
     return status == 0
 }
 
 def imageExists(String files, String tag, String image) {
-    // returnStatus: 0 if branch exists, 1 if not
     def status = sh(
-        script: "cd ${files} && docker images ${image}:${tag}",
+        script: """
+            cd "${files}"
+            docker images "${image}:${tag}" | grep "${image}" >/dev/null 2>&1
+        """,
         returnStatus: true
     )
-    
     return status == 0
 }
-
 
 pipeline {
     agent any
@@ -29,117 +30,106 @@ pipeline {
         choice(name: 'env', description: 'Enter environments', choices: ['d1', 's1'])
     }
     environment {
-            PORT = "3000"
-            KUBECONFIG = 'C:\\Users\\Sabar\\.kube\\config'
-            TAG = "${params.tag}"
-            
-       }
+        PORT = "3000"
+        KUBECONFIG = '/var/lib/jenkins/.kube/config'
+        TAG = "${params.tag}"
+    }
     stages {
-        
-        stage('get all cred from json') {
+        stage('Clean workspace') {
             steps {
-                    withCredentials([file(credentialsId: 'secret_v2', variable: 'KEY_FILE')]) {
-                     script {
-                         def fileContents = readFile(file: env.KEY_FILE)
-                         def json = new JsonSlurper().parseText(fileContents)
-                        //  sh "echo %json.docker_image%"
-                        // env = json
+                sh "rm -rf /var/lib/jenkins/workspace/start/*"
+            }
+        }
+        stage('Get all credentials from JSON') {
+            steps {
+                withCredentials([file(credentialsId: 'secret_v2', variable: 'KEY_FILE')]) {
+                    script {
+                        def fileContents = readFile(file: env.KEY_FILE)
+                        def json = new JsonSlurper().parseText(fileContents)
                         env.docker_image = json.docker_image
                         json.each { key, value ->
                             env[key.toUpperCase()] = value
                         }
-                     }
+                    }
                 }
             }
         }
+
         stage('Git Clone or Pull for kube') {
-                steps {
-                    // Clone if folder doesn't exist, otherwise pull
-                    sh '''
-                    if not exist "kube-bas-learning" (
+            steps {
+                sh '''
+                    if [ ! -d "kube-bas-learning" ]; then
                         git clone https://github.com/sabarinat/kube-bas-learning.git
-                    ) else (
+                    else
                         cd kube-bas-learning
                         git checkout main
                         git pull
-                    )
-                    
-                    '''
-                }
+                    fi
+                '''
             }
-        
+        }
+
         stage('Docker Login') {
             steps {
                 script {
-                    sh "echo ${env.DOCKER_PASS} | docker login -u ${env.DOCKER_USER} --password ${env.DOCKER_PASS}"
+                    sh "echo '${env.DOCKER_PASS}' | docker login -u '${env.DOCKER_USER}' --password-stdin"
                 }
             }
         }
-        
-        stage('Git Clone or Pull for node with docker') {
-                steps {
-                    // Clone if folder doesn't exist, otherwise pull
-                    sh "echo --- $tag"
-                    sh '''
-                    echo %TAG%
-                    if not exist "simple-node-docker" (
-                       git clone https://github.com/sabarinat/simple-node-docker.git
-                    ) else (
+
+        stage('Git Clone or Pull for node with Docker') {
+            steps {
+                sh '''
+                    echo $TAG
+                    if [ ! -d "simple-node-docker" ]; then
+                        git clone https://github.com/sabarinat/simple-node-docker.git
+                    else
                         cd simple-node-docker
                         git checkout main
                         git pull
-                    )
-                    '''
-                }
+                    fi
+                '''
             }
-            
-        stage('Docker push image') {
-                steps {
-                    // Clone if folder doesn't exist, otherwise pull
-                    script {
-                    def branchName = "release-%TAG%"
-                    sh "cd simple-node-docker"
+        }
+
+        stage('Docker Build and Push') {
+            steps {
+                script {
+                    def branchName = "release-${TAG}"
                     def folder = "simple-node-docker"
                     if (imageExists(folder, TAG, env.DOCKER_IMAGE)) {
-                        echo "Branch '${branchName}' exists in local repo"
+                        echo "Docker image '${env.DOCKER_IMAGE}:${TAG}' already exists"
                     } else {
-                        sh '''cd simple-node-docker
-                            git checkout tags/%TAG% -b release-%TAG%"
+                        sh """
+                            cd ${folder}
+                            git checkout tags/${TAG} -b release-${TAG}
                             docker build -t myapp:latest .
-                           docker tag myapp:latest %DOCKER_IMAGE%:%TAG%
-                           docker push %DOCKER_IMAGE%:%TAG%
-                           git checkout main
-                           git branch -d release-%TAG%"
-                            '''
+                            docker tag myapp:latest ${env.DOCKER_IMAGE}:${TAG}
+                            docker push ${env.DOCKER_IMAGE}:${TAG}
+                            git checkout main
+                            git branch -d release-${TAG}
+                        """
                     }
                 }
-                }
             }
-        
-        stage('Kubernetes') {
-            steps { 
+        }
+
+        stage('Deploy') {
+            steps {
                 script {
                     def files = ['namespace.yaml','deployment.yaml','node-service.yaml', 'ingres.yaml']
-    
-                        files.each { file ->
-                        echo "Processing file: ${file}"
 
-                        // Create temp file to avoid corrupting original YAML
+                    files.each { file ->
                         def output = "generated-${file}"
-                        echo "Processing file: ---- ${file}"
-                        // Replace placeholder
-                        sh '''
-                            sed "s/{name_space}/${params_country}/g" kube-bas-learning/${file} \
-                            | sed "s/{country}/${params_env}/g" \
-                            | sed "s/{tag}/${params_tag}/g" \
-                            > ${output}
-                            '''
-                         echo "Processing file: ---- ${file}"
-                        // Apply using kubectl
+                        // Replace placeholders using sed
                         sh """
-                            kubectl apply -f ${output}
+                            cp kube-bas-learning/${file} ${output}
+                            sed -i 's/{name_space}/${params.country}/g' ${output}
+                            sed -i 's/{country}/${params.env}/g' ${output}
+                            sed -i 's/{tag}/${params.tag}/g' ${output}
                         """
-                }
+                        sh "kubectl apply -f ${output}"
+                    }
                 }
             }
         }
